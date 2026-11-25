@@ -25,7 +25,6 @@ jobs:
           echo "ANDROID_HOME=$SDK_DIR" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$SDK_DIR" >> $GITHUB_ENV
           SDKMANAGER=$(find "$SDK_DIR/cmdline-tools" -name sdkmanager 2>/dev/null | head -n 1)
-          echo "Using sdkmanager: $SDKMANAGER"
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
           "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
 
@@ -44,15 +43,40 @@ jobs:
             fi
           fi
           SETTINGS_FILE=$(find . -maxdepth 4 -name 'settings.gradle.kts' | head -n 1)
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR: settings.gradle.kts not found!"
-            ls -la
-            exit 1
-          fi
           PROJECT_DIR=$(dirname "$SETTINGS_FILE")
-          echo "Found Android project in: $PROJECT_DIR"
           cd "$PROJECT_DIR"
-          gradle assembleDebug --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=768m"
+
+          python3 - << 'PY'
+          import pathlib
+          m = pathlib.Path("app/src/main/java/com/s23ultra/gigacam/camera/S23UltraLensMapper.kt")
+          if m.exists():
+              t = m.read_text()
+              t = t.replace("stdMap?.getOutputSizes(ImageFormat.JPEG).orEmpty()", "stdMap?.getOutputSizes(ImageFormat.JPEG) ?: emptyArray()")
+              t = t.replace("maxMap?.getOutputSizes(ImageFormat.JPEG).orEmpty()", "(maxMap?.getOutputSizes(ImageFormat.JPEG) ?: emptyArray())")
+              t = t.replace("stdMap?.getHighResolutionOutputSizes(ImageFormat.JPEG).orEmpty()", "stdMap?.getHighResolutionOutputSizes(ImageFormat.JPEG) ?: emptyArray()")
+              t = t.replace("chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES).orEmpty()", "chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: IntArray(0)")
+              m.write_text(t)
+          c = pathlib.Path("app/src/main/java/com/s23ultra/gigacam/camera/ProCamera2Controller.kt")
+          if c.exists():
+              t = c.read_text()
+              t = t.replace("CaptureRequest.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION", "CameraMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION")
+              t = t.replace(
+                  "DngCreator(chars, captureResult).use { dng ->\n                    FileOutputStream(outFile).use { fos ->\n                        dng.writeImage(fos, rawImg)\n                    }\n                }",
+                  "val dng = DngCreator(chars, captureResult)\n                try {\n                    FileOutputStream(outFile).use { fos -> dng.writeImage(fos, rawImg) }\n                } finally { dng.close() }"
+              )
+              c.write_text(t)
+          a = pathlib.Path("app/src/main/java/com/s23ultra/gigacam/processing/AiEnhancementEngine.kt")
+          if a.exists():
+              t = a.read_text()
+              t = t.replace("tensor.use { t ->\n                    session.run(mapOf(inputName to t)).use { results ->", "try {\n                    val results = session.run(mapOf(inputName to tensor))\n                    try {")
+              t = t.replace("                        )\n                    }\n                }\n                x += stride", "                        )\n                    } finally { results.close() }\n                } finally { tensor.close() }\n                x += stride")
+              a.write_text(t)
+          gp = pathlib.Path("gradle.properties")
+          if gp.exists():
+              gp.write_text("org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\nkotlin.code.style=official\nandroid.nonTransitiveRClass=true\n")
+          PY
+
+          gradle assembleDebug --no-daemon
           cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/S23UltraGigaCam-S23U.apk"
           ls -lh "$GITHUB_WORKSPACE/S23UltraGigaCam-S23U.apk"
 
